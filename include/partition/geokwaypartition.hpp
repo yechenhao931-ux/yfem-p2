@@ -69,9 +69,14 @@ struct GeoKwayOptions
     int   rbTrials         = 6;    // 退化为 RB 时的试验数
  
     // ── 精化参数 ──────────────────────────────────────────────
-    real_t alpha = 0.7;   // [创新3] 拓扑权重（0~1） 
+    real_t alpha = 0.7;   // [创新3] 拓扑权重（0~1）
     bool autoBeta = true;
     real_t beta = 1.0;
+    // 【新增】软平衡感知项（GeoFM 内）
+    //   gain_total = α*topo + (1-α)*β*geo + γ*balance
+    //   γ=0 退化为旧行为；γ>0 提供"重→轻"软推力，常同时改善 mincut 与
+    //   maxImbalance。推荐 0.3~0.6。
+    real_t balanceGamma = 0.4;
     int nFMIter = 10;
     real_t ubFactor = 1.03;
 
