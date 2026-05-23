@@ -26,7 +26,6 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RELEASE")
     add_compile_definitions(YFEM_REL)
 endif()
 
-find_package(MPI REQUIRED)
 
 # --- 2. 条件查找 Gmsh ---
 if(ENABLE_GMSH)
@@ -48,7 +47,6 @@ target_include_directories(yfem
 
 target_link_libraries(yfem 
     PRIVATE common graph io partition pfem
-    PRIVATE MPI::MPI_CXX  
 )
 
 # --- 3. 针对 target 注入宏和库 ---
