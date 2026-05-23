@@ -1,8 +1,9 @@
-#include <iostream>
-#include <common/optparser.hpp>
-char buf[64];
+#include <omp.h>
+#include <stdio.h>
 
-
-int main(int argc, char** argv){
-    return 0;
+int main() {
+#pragma omp parallel
+  {
+    printf("thread %d\n", omp_get_thread_num());
+  }
 }

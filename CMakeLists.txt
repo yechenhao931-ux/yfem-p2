@@ -30,15 +30,51 @@ endif()
 
 
 # --- 2a. 条件查找 OpenMP ---
+# --- 2a. OpenMP support (Linux/macOS) ---
 if(ENABLE_OPENMP)
-    find_package(OpenMP)
-    if(OpenMP_CXX_FOUND)
-        message(STATUS "OpenMP found (${OpenMP_CXX_VERSION}): parallel partitioning enabled")
-    else()
-        message(STATUS "OpenMP not found: building serial partitioning")
-    endif()
-endif()
 
+    # macOS special handling
+    if(APPLE)
+
+        # Homebrew LLVM
+        set(HOMEBREW_LLVM "/usr/local/opt/llvm")
+
+        # Use Homebrew clang instead of AppleClang
+        set(CMAKE_C_COMPILER "${HOMEBREW_LLVM}/bin/clang")
+        set(CMAKE_CXX_COMPILER "${HOMEBREW_LLVM}/bin/clang++")
+
+        # libomp paths
+        set(OpenMP_ROOT "/usr/local/opt/libomp")
+
+        # include/lib
+        include_directories("${OpenMP_ROOT}/include")
+        link_directories("${OpenMP_ROOT}/lib")
+
+        # OpenMP flags for macOS
+        set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp")
+        set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
+
+        set(OpenMP_C_LIB_NAMES "omp")
+        set(OpenMP_CXX_LIB_NAMES "omp")
+
+        set(OpenMP_omp_LIBRARY "${OpenMP_ROOT}/lib/libomp.dylib")
+
+    endif()
+
+    find_package(OpenMP REQUIRED)
+
+    if(OpenMP_CXX_FOUND)
+
+        message(STATUS "OpenMP found")
+        message(STATUS "OpenMP CXX flags: ${OpenMP_CXX_FLAGS}")
+
+    else()
+
+        message(FATAL_ERROR "OpenMP requested but not found")
+
+    endif()
+
+endif()
 # --- 2. 条件查找 Gmsh ---
 if(ENABLE_GMSH)
     find_path(GMSH_INCLUDE_DIR gmsh.h PATHS ${CMAKE_SOURCE_DIR}/thirdparty/gmsh-sdk/include)
@@ -60,6 +96,10 @@ target_include_directories(yfem
 target_link_libraries(yfem 
     PRIVATE common graph io partition pfem
 )
+
+if(ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(yfem PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 # --- 3. 针对 target 注入宏和库 ---
 if(ENABLE_GMSH)
