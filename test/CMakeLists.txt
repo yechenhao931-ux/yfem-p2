@@ -15,7 +15,6 @@ foreach(test_source ${TEST_SOURCES})
     # 链接必要的库
     target_link_libraries(${test_name} 
         PRIVATE common io graph partition pfem 
-        PRIVATE MPI::MPI_CXX
         PRIVATE ${GMSH_LIBRARY}
     )
     

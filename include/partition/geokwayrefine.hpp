@@ -48,6 +48,13 @@ struct GeoFMOpts
     real_t alpha = 0.7;     // 拓扑权重；1-alpha 为几何权重
     bool autoBeta = true;   // 自动标定 beta（topo/geo 量级比）
     real_t beta = 1.0;   // 手动 beta（autoBeta=false 时有效）
+    // 【新增 软平衡感知项】
+    //   FM 混合增益新增 balance 项：当 src 偏重 / dst 偏轻时，
+    //   给该方向的移动一个正向奖励（与 topo 同量级，自动标定）。
+    //   作用：在 ubFactor 硬约束之外提供"主动均衡"软推力，
+    //         避免 FM 在硬上限边缘震荡，从而同时改善 mincut 与
+    //         maxImbalance。0 = 关闭（旧行为）；推荐 0.3~0.6。
+    real_t balanceGamma = 0.4;
     bool verbose = false;
 };
 

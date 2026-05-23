@@ -458,21 +458,48 @@ KmeansResult KmeansPartition(Graph &graph, int nparts, const KmeansOpts &opts)
 
     KmeansResult res;
 
+    // 中心间距离² 矩阵（用于 Elkan/Phillips 三角不等式剪枝）
+    //   引理：若 d²(v, c_curBest) ≤ 0.25 * d²(c_curBest, c_q)，则 q 不可能更近，
+    //         可跳过 d²(v, c_q) 计算。dist² 单调，无需开方。
+    //   收益：对 K 较大（≥8）时显著，相同时间内可跑更多 K-means trial，
+    //         从而提升初始划分质量。
+    std::vector<std::vector<real_t>> dC2(nparts, std::vector<real_t>(nparts, 0.));
+    auto recomputeDC2 = [&]()
+    {
+        for (int i = 0; i < nparts; ++i)
+        {
+            dC2[i][i] = 0.0;
+            for (int j = i + 1; j < nparts; ++j)
+            {
+                real_t dx = centers[i][0] - centers[j][0];
+                real_t dy = centers[i][1] - centers[j][1];
+                real_t dz = centers[i][2] - centers[j][2];
+                real_t d2 = dx * dx + dy * dy + dz * dz;
+                dC2[i][j] = dC2[j][i] = d2;
+            }
+        }
+    };
+    recomputeDC2();
+
     // ── Lloyd 迭代 ────────────────────────────────────────────
     for (int iter = 0; iter < opts.maxIter; iter++)
     {
         bool anyChange = false;
         real_t inertia = 0.0;
 
-        // 分配阶段：每个顶点分配到最近中心
+        // 分配阶段：每个顶点分配到最近中心（带三角不等式剪枝）
         for (int v = 0; v < n; v++)
         {
-            real_t bestD = std::numeric_limits<real_t>::max();
-            int bestP = 0;
+            // 从当前分配开始，最大化剪枝命中率
+            int bestP = graph.where[v];
+            if (bestP < 0 || bestP >= nparts) bestP = 0;
+            real_t bestD = dist2C(graph.coordinates[v], centers[bestP]);
             for (int p = 0; p < nparts; p++)
             {
+                if (p == bestP) continue;
+                // 剪枝：4*d²(v,c_bestP) ≤ d²(c_bestP, c_p) ⇒ c_p 不可能更近
+                if (4.0 * bestD <= dC2[bestP][p]) continue;
                 real_t d = dist2C(graph.coordinates[v], centers[p]);
-
                 if (d < bestD)
                 {
                     bestD = d;
@@ -522,6 +549,8 @@ KmeansResult KmeansPartition(Graph &graph, int nparts, const KmeansOpts &opts)
             maxShift = std::max(maxShift, shift);
         }
         centers = newC;
+        // 中心移动后必须重算 dC2 才能继续安全剪枝
+        recomputeDC2();
 
         if (opts.verbose)
             std::printf("  [Kmeans iter%3d] inertia=%.4f  maxShift=%.6f\n",

@@ -51,11 +51,17 @@ static int GeoHEM_Match(const Graph &g, std::vector<int> &match, int seed,
     {
         maxEw = std::max(maxEw, g.adjwgt[ei]);
     }
-    // 随机访问顺序
+    // ── SHEM 风格的访问顺序：按 vwgt 升序，权重相同则随机 ────
+    //   动机：纯随机顺序时，重顶点容易剩到最后只能与剩下的轻顶点
+    //   匹配（或落单），形成大失衡的"超级顶点"。先匹配轻顶点能让
+    //   重顶点更早找到合适伙伴（同样轻），从而保证粗图各顶点权重
+    //   更均衡，进而提升初始划分质量与 maxImbalance。
     std::vector<int> perm(n);
     std::iota(perm.begin(), perm.end(), 0);
     std::mt19937 rng(seed);
-    std::shuffle(perm.begin(), perm.end(), rng);
+    std::shuffle(perm.begin(), perm.end(), rng); // 先打散平局
+    std::stable_sort(perm.begin(), perm.end(),
+                     [&](int a, int b) { return g.Vwgt(a) < g.Vwgt(b); });
 
     int nc = 0;
     for (int pi = 0; pi < n; ++pi)
@@ -235,14 +241,30 @@ static void ProjectPartition(Graph &f, const Graph &c, int nparts)
 
 // ================================================================
 //  [创新2] K-means++ 初始划分
-//  多次随机试验，取 inertia 最低（几何最内聚）的结果
+//  多次随机试验，按"mincut + 不平衡惩罚"挑最优结果。
+//  原版按 inertia（簇内方差）选优，但 inertia 与最终目标 mincut
+//  并不严格一致；尤其当形状各向异性时，inertia 最低未必 mincut 最低。
+//  这里用与最终 KwayResult 同口径的 mincut 作主指标，inertia 仅做平局
+//  打破 / 调试输出，效果更贴近最终精化目标。
 // ================================================================
+static int EvalMincutGc(const Graph &gc)
+{
+    int c = 0;
+    for (int v = 0; v < gc.nvtxs; ++v)
+        for (int ei = gc.xadj[v]; ei < gc.xadj[v + 1]; ++ei)
+            if (gc.where[v] != gc.where[gc.adjncy[ei]])
+                c += gc.Ewgt(ei);
+    return c / 2;
+}
+
 static KmeansResult InitByKmeans(Graph &gc, int nparts,
                                  const GeoKwayOptions &opts,
                                  std::mt19937 &rng)
 {
     KmeansResult best;
     best.inertia = std::numeric_limits<real_t>::max();
+    int bestCut = std::numeric_limits<int>::max();
+    real_t bestImb = std::numeric_limits<real_t>::max();
     std::vector<int> bestWhere;
     std::vector<int> bestPwgts;
 
@@ -254,13 +276,29 @@ static KmeansResult InitByKmeans(Graph &gc, int nparts,
     ko.useTopoBalanceFix  = opts.kmeansTopoBalanceFix;
     ko.enforceConnectivity = opts.kmeansEnforceConn;
 
+    real_t ubInit = opts.ubFactor * 1.5f;
     for (int t = 0; t < opts.initTrials; ++t)
     {
         ko.seed = (int)rng();
         KmeansResult r = KmeansPartition(gc, nparts, ko);
-        if (r.inertia < best.inertia)
+        int cut = EvalMincutGc(gc);
+        // 综合得分：cut + imb 罚（先满足 ub，再比 cut，最后比 inertia）
+        bool feasibleR = (r.maxImbalance + 1.f <= ubInit);
+        bool feasibleB = (bestImb + 1.f <= ubInit);
+        bool better;
+        if (feasibleR && !feasibleB)
+            better = true;
+        else if (!feasibleR && feasibleB)
+            better = false;
+        else if (cut != bestCut)
+            better = (cut < bestCut);
+        else
+            better = (r.inertia < best.inertia);
+        if (better)
         {
             best = r;
+            bestCut = cut;
+            bestImb = r.maxImbalance;
             bestWhere = gc.where;
             bestPwgts = gc.pwgts;
         }
@@ -358,6 +396,7 @@ GeoKwayResult GeoKwayPartition(Graph &graph, const GeoKwayOptions &opts)
     GeoFMOpts gfo;
     gfo.nparts=K; gfo.nIter=opts.nFMIter; gfo.ubFactor=opts.ubFactor;
     gfo.alpha=opts.alpha; gfo.autoBeta=opts.autoBeta; gfo.beta=opts.beta;
+    gfo.balanceGamma = opts.balanceGamma;
     gfo.verbose=opts.verbose;
  
     cur = gc;
