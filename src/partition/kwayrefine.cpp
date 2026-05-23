@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <numeric>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // ── Bucket 队列 ───────────────────────────────────────────────
 struct KBQ
@@ -62,6 +65,13 @@ struct KBQ
 // ================================================================
 //  ComputeCkrinfo
 // ================================================================
+// 并行化说明（OpenMP）：
+//   邻边扫描按顶点天然独立，是 O(V+E) 的热点（每轮 FM、每层反粗化都会调用）。
+//   为保证结果与串行版本逐字节一致：
+//     · 每线程使用独立的 tmpEd/seen 临时数组，避免共享写竞争；
+//     · cnbrPool 的偏移用前缀和按 v 递增顺序预先算好（= 串行追加顺序）；
+//     · 每个顶点内邻接分区对仍按"首次出现"顺序写入（= 串行 seen 顺序）；
+//     · pwgts / mincut / 边界表在 v 递增的串行小循环中累加（O(V)，顺序与串行同）。
 void ComputeCkrinfo(Graph &g, int nparts)
 {
     const int n = g.nvtxs;
@@ -71,41 +81,102 @@ void ComputeCkrinfo(Graph &g, int nparts)
     g.bndind.clear();
     g.nbnd = 0;
     g.mincut = 0;
-    std::vector<int> tmpEd(nparts, 0), seen;
-    seen.reserve(nparts);
 
-    for (int v = 0; v < n; ++v)
-        g.pwgts[g.where[v]] += g.Vwgt(v);
+    int nthreads = 1;
+#ifdef _OPENMP
+    nthreads = omp_get_max_threads();
+#endif
+    std::vector<std::vector<int>> tmpEdTL(nthreads, std::vector<int>(nparts, 0));
+    std::vector<std::vector<int>> seenTL(nthreads);
 
+    // ── Pass A（并行）：每个顶点的 id / ed / nnbrs（工作量均匀 → static）──
+    // if(n>阈值)：小图直接串行，避免线程组开销（box.mesh 等小网格不退化）
+#pragma omp parallel for schedule(static) if (n > 16384)
     for (int v = 0; v < n; ++v)
     {
-        int pv = g.where[v];
-        Ckrinfo &ci = g.ckrinfo[v];
-        ci.id = ci.ed = ci.nnbrs = 0;
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &tmpEd = tmpEdTL[tid];
+        std::vector<int> &seen = seenTL[tid];
         seen.clear();
+        int pv = g.where[v];
+        int id = 0, ed = 0;
         for (int ei = g.xadj[v]; ei < g.xadj[v + 1]; ++ei)
         {
             int u = g.adjncy[ei], ew = g.Ewgt(ei), pu = g.where[u];
             if (pu == pv)
-                ci.id += ew;
+                id += ew;
             else
             {
-                ci.ed += ew;
+                ed += ew;
                 if (tmpEd[pu] == 0)
                     seen.push_back(pu);
                 tmpEd[pu] += ew;
             }
         }
-        ci.inbr = (int)g.cnbrPool.size();
+        Ckrinfo &ci = g.ckrinfo[v];
+        ci.id = id;
+        ci.ed = ed;
         ci.nnbrs = (int)seen.size();
         for (int pu : seen)
+            tmpEd[pu] = 0; // 复位本线程临时数组
+    }
+
+    // ── 前缀和（串行）：inbr 偏移 == 串行追加顺序 ──
+    size_t total = 0;
+    for (int v = 0; v < n; ++v)
+    {
+        g.ckrinfo[v].inbr = (int)total;
+        total += (size_t)g.ckrinfo[v].nnbrs;
+    }
+    g.cnbrPool.assign(total, Cnbr{});
+
+    // ── Pass B（并行）：仅边界顶点(nnbrs>0)需写 cnbrPool；
+    //    内部顶点直接跳过，省去重复的邻边扫描（FE 网格内部点占绝大多数）。
+    //    工作量不均匀 → dynamic 负载均衡。──
+#pragma omp parallel for schedule(dynamic, 256) if (n > 16384)
+    for (int v = 0; v < n; ++v)
+    {
+        if (g.ckrinfo[v].nnbrs == 0)
+            continue;
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &tmpEd = tmpEdTL[tid];
+        std::vector<int> &seen = seenTL[tid];
+        seen.clear();
+        int pv = g.where[v];
+        for (int ei = g.xadj[v]; ei < g.xadj[v + 1]; ++ei)
         {
-            g.cnbrPool.push_back({pu, tmpEd[pu]});
+            int u = g.adjncy[ei], ew = g.Ewgt(ei), pu = g.where[u];
+            if (pu != pv)
+            {
+                if (tmpEd[pu] == 0)
+                    seen.push_back(pu);
+                tmpEd[pu] += ew;
+            }
+        }
+        int base = g.ckrinfo[v].inbr;
+        for (size_t i = 0; i < seen.size(); ++i)
+        {
+            int pu = seen[i];
+            g.cnbrPool[base + i] = {pu, tmpEd[pu]};
             tmpEd[pu] = 0;
         }
-        if (ci.ed > 0)
+    }
+
+    // ── pwgts / mincut / 边界（串行 v 递增，结果与串行一致）──
+    for (int v = 0; v < n; ++v)
+        g.pwgts[g.where[v]] += g.Vwgt(v);
+    for (int v = 0; v < n; ++v)
+    {
+        int ed = g.ckrinfo[v].ed;
+        if (ed > 0)
         {
-            g.mincut += ci.ed;
+            g.mincut += ed;
             g.bndptr[v] = g.nbnd++;
             g.bndind.push_back(v);
         }

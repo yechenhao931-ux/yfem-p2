@@ -1,5 +1,8 @@
-build/
+build*/
 thirdparty/
+
+# partition output
+*.part
 
 
 # OS-specific: Mac

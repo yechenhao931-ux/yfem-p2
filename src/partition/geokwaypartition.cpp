@@ -8,6 +8,9 @@
 #include <numeric>
 #include <random>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // ================================================================
 //  [创新1] 几何感知 HEM 匹配（带权重平衡约束）
@@ -170,10 +173,24 @@ static Graph *BuildCoarseFromMatch(Graph &fine,
     for (int v = 0; v < n; ++v)
         c2f[match[v]].push_back(v);
 
-    std::vector<int> marker(nc, -1), adjList;
+    // 并行化（OpenMP）：各粗顶点 cv 相互独立，每线程独立 marker / edgeIdx，
+    //   结果与串行逐字节一致（详见 coarse.cpp BuildCoarseGraph 的说明）。
+    int nthreads = 1;
+#ifdef _OPENMP
+    nthreads = omp_get_max_threads();
+#endif
+    std::vector<std::vector<int>> markerTL(nthreads, std::vector<int>(nc, -1));
+
+    // Pass1：统计每个粗顶点的邻居数
+#pragma omp parallel for schedule(dynamic, 256) if (nc > 16384)
     for (int cv = 0; cv < nc; ++cv)
     {
-        adjList.clear();
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &marker = markerTL[tid];
+        int deg = 0;
         for (int fv : c2f[cv])
             for (int ei = fine.xadj[fv]; ei < fine.xadj[fv + 1]; ++ei)
             {
@@ -183,10 +200,10 @@ static Graph *BuildCoarseFromMatch(Graph &fine,
                 if (marker[cu] != cv)
                 {
                     marker[cu] = cv;
-                    adjList.push_back(cu);
+                    ++deg;
                 }
             }
-        xadj[cv + 1] = (int)adjList.size();
+        xadj[cv + 1] = deg;
     }
     for (int cv = 0; cv < nc; ++cv)
         xadj[cv + 1] += xadj[cv];
@@ -195,14 +212,21 @@ static Graph *BuildCoarseFromMatch(Graph &fine,
     c->adjwgt.resize(xadj[nc], 0);
     c->nedges = xadj[nc];
 
-    std::fill(marker.begin(), marker.end(), -1);
-    std::vector<int> pos(nc), edgeIdx(nc, -1), curNbrs;
+    std::vector<int> pos(nc);
     for (int cv = 0; cv < nc; ++cv)
         pos[cv] = xadj[cv];
+    std::vector<std::vector<int>> edgeIdxTL(nthreads, std::vector<int>(nc, -1));
 
+    // Pass2：填充边列表与边权
+#pragma omp parallel for schedule(dynamic, 256) if (nc > 16384)
     for (int cv = 0; cv < nc; ++cv)
     {
-        curNbrs.clear();
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &edgeIdx = edgeIdxTL[tid];
+        std::vector<int> curNbrs;
         for (int fv : c2f[cv])
             for (int ei = fine.xadj[fv]; ei < fine.xadj[fv + 1]; ++ei)
             {

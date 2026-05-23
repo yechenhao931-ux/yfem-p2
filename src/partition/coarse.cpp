@@ -13,6 +13,9 @@
 #include <map>
 #include <vector>
 #include <unordered_map>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // ================================================================
 //  HEM_Match
@@ -103,22 +106,30 @@ static Graph *BuildCoarseGraph(Graph &fine, const std::vector<int> &match, int n
     //   Pass1: 对每条细边 (v,u)，若 cv != cu，标记 cv 有邻居 cu
     //   用 marker 数组避免重复计数
 
-    std::vector<int> marker(nc, -1); // marker[p] = 上次被 cv 访问时的 cv
-    std::vector<int> fine2coarse_deg(nc, 0);
-
     // Pass1：统计粗图中每个超级顶点的邻居分区数（用于 xadj）
-    // 按粗顶点遍历：对每个细顶点 v，扫描其细图邻居
     // 先建立粗顶点 → 细顶点列表
     std::vector<std::vector<int>> c2f(nc);
     for (int v = 0; v < n; ++v)
         c2f[match[v]].push_back(v);
 
-    std::vector<int> adjList; // 临时邻居列表
-    adjList.reserve(64);
+    // 并行化（OpenMP）：各粗顶点 cv 的统计相互独立，仅写自己的 xadj[cv+1]。
+    //   marker 用"!=cv"技巧去重；每线程独立的 marker 避免竞争，且因全局 cv 互异，
+    //   该技巧在每个线程内部依然成立。结果与串行逐字节一致。
+    int nthreads = 1;
+#ifdef _OPENMP
+    nthreads = omp_get_max_threads();
+#endif
+    std::vector<std::vector<int>> markerTL(nthreads, std::vector<int>(nc, -1));
 
+#pragma omp parallel for schedule(dynamic, 256) if (nc > 16384)
     for (int cv = 0; cv < nc; ++cv)
     {
-        adjList.clear();
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &marker = markerTL[tid];
+        int deg = 0;
         for (int fv : c2f[cv])
         {
             for (int ei = fine.xadj[fv]; ei < fine.xadj[fv + 1]; ++ei)
@@ -129,11 +140,11 @@ static Graph *BuildCoarseGraph(Graph &fine, const std::vector<int> &match, int n
                 if (marker[cu] != cv)
                 {
                     marker[cu] = cv;
-                    adjList.push_back(cu);
+                    ++deg;
                 }
             }
         }
-        xadj[cv + 1] = (int)adjList.size();
+        xadj[cv + 1] = deg;
     }
     // 前缀和
     for (int cv = 0; cv < nc; ++cv)
@@ -143,22 +154,23 @@ static Graph *BuildCoarseGraph(Graph &fine, const std::vector<int> &match, int n
     c->adjwgt.resize(xadj[nc], 0);
     c->nedges = xadj[nc];
 
-    // Pass2：填充边列表和边权
-    std::fill(marker.begin(), marker.end(), -1);
+    // Pass2：填充边列表和边权（并行：各 cv 仅写自己的 [xadj[cv],xadj[cv+1]) 区间）
     std::vector<int> pos(nc);
-    for (int cv = 0; cv < nc; ++cv){
+    for (int cv = 0; cv < nc; ++cv)
         pos[cv] = xadj[cv];
-    }
-        
 
-    // 用 edgeIdx[cu] 记录 cv→cu 在 adjncy 中的位置（局部清零）
-    std::vector<int> edgeIdx(nc, -1);
-    std::vector<int> curNbrs;
-    curNbrs.reserve(64);
+    // 每线程独立的 edgeIdx（记录 cv→cu 在 adjncy 中的槽位；每个 cv 处理完复位）
+    std::vector<std::vector<int>> edgeIdxTL(nthreads, std::vector<int>(nc, -1));
 
+#pragma omp parallel for schedule(dynamic, 256) if (nc > 16384)
     for (int cv = 0; cv < nc; ++cv)
     {
-        curNbrs.clear();
+        int tid = 0;
+#ifdef _OPENMP
+        tid = omp_get_thread_num();
+#endif
+        std::vector<int> &edgeIdx = edgeIdxTL[tid];
+        std::vector<int> curNbrs;
         for (int fv : c2f[cv])
         {
             for (int ei = fine.xadj[fv]; ei < fine.xadj[fv + 1]; ++ei)
@@ -184,7 +196,7 @@ static Graph *BuildCoarseGraph(Graph &fine, const std::vector<int> &match, int n
                 }
             }
         }
-        // 清零 edgeIdx
+        // 复位 edgeIdx，供本线程下一个 cv 使用
         for (int cu : curNbrs)
             edgeIdx[cu] = -1;
     }

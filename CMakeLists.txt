@@ -4,6 +4,8 @@ project(fem CXX)
 # --- 1. 定义开关选项 ---
 # 默认设置为 OFF，使用时通过 cmake -DENABLE_GMSH=ON .. 开启
 option(ENABLE_GMSH "Enable Gmsh support" OFF)
+# OpenMP 并行（默认 ON；用 -DENABLE_OPENMP=OFF 可构建串行基线做对比）
+option(ENABLE_OPENMP "Enable OpenMP parallelism" ON)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 17)
@@ -26,6 +28,16 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RELEASE")
     add_compile_definitions(YFEM_REL)
 endif()
 
+
+# --- 2a. 条件查找 OpenMP ---
+if(ENABLE_OPENMP)
+    find_package(OpenMP)
+    if(OpenMP_CXX_FOUND)
+        message(STATUS "OpenMP found (${OpenMP_CXX_VERSION}): parallel partitioning enabled")
+    else()
+        message(STATUS "OpenMP not found: building serial partitioning")
+    endif()
+endif()
 
 # --- 2. 条件查找 Gmsh ---
 if(ENABLE_GMSH)
