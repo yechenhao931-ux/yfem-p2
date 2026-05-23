@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
     ss << file_name << ".part";
     std::string s = ss.str();
 
-    int npart = 8;
+    int npart = n_part;
     MFEMMesh10 mmesh;
 
     mmesh.read_mesh(mesh_file_path);
@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
     {
         // GKWAY划分
 
-        Graph g1(mmesh, 3);
+        Graph g1(mmesh, mmesh.dimension);
         GeoKwayOptions o1;
         o1.nparts = npart;
         o1.verbose = false;
@@ -90,7 +90,7 @@ int main(int argc, char *argv[])
     {
 
         // Kway划分
-        Graph g2 = Graph(mmesh, 3);
+        Graph g2 = Graph(mmesh, mmesh.dimension);
         KwayOptions o2;
         o2.objective = KwayObjective::EdgeCut;
         o2.nparts = npart;

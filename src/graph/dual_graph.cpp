@@ -51,13 +51,24 @@ std::vector<std::vector<size_t>> build_dual_graph(const std::vector<std::vector<
                 assert(0);
             }
         }else if(dim == 3){
-            // hex
+            // tetrahedron (4 个三角面)
             if (vertices.size() == 4){
                 faces = {
                     {vertices[0], vertices[1], vertices[2]},
                     {vertices[0], vertices[1], vertices[3]},
                     {vertices[1], vertices[2], vertices[3]},
                     {vertices[0], vertices[2], vertices[3]}
+                };
+            }
+            // hexahedron / cube (6 个四边形面，MFEM 顶点序)
+            else if (vertices.size() == 8){
+                faces = {
+                    {vertices[0], vertices[1], vertices[2], vertices[3]}, // bottom
+                    {vertices[4], vertices[5], vertices[6], vertices[7]}, // top
+                    {vertices[0], vertices[1], vertices[5], vertices[4]},
+                    {vertices[1], vertices[2], vertices[6], vertices[5]},
+                    {vertices[2], vertices[3], vertices[7], vertices[6]},
+                    {vertices[3], vertices[0], vertices[4], vertices[7]}
                 };
             } else{
                 assert(0);

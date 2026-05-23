@@ -21,6 +21,7 @@ class GeometryType(IntEnum):
 class MFEMMesh:
     def __init__(self, file_path):
         self.dimension = 0
+        self.num_vertices = 0
         self.elements = []
         self.boundary = []
         self.vertices = []
@@ -73,12 +74,63 @@ class MFEMMesh:
                 continue
             elif line == "vertices":
                 num_vertices = int(lines[i+1].strip())
-                v_dim = int(lines[i+2].strip())
-                i += 3
+                self.num_vertices = num_vertices
+                # 找到下一处非空行：数字 => 普通坐标；"nodes" => 高阶网格
+                j = i + 2
+                while j < len(lines) and lines[j].strip() == "":
+                    j += 1
+                nxt = lines[j].strip() if j < len(lines) else ""
+                if nxt == "nodes":
+                    # 坐标在后面的 nodes GridFunction 中给出，交由 nodes 分支解析
+                    i = j
+                    continue
+                v_dim = int(nxt)
+                i = j + 1
                 for _ in range(num_vertices):
                     coords = list(map(float, lines[i].split()))
+                    # 补齐到三维，便于统一绘制
+                    while len(coords) < 3:
+                        coords.append(0.0)
                     self.vertices.append(coords)
                     i += 1
+                continue
+            elif line == "nodes":
+                # 高阶（曲边）网格：节点坐标以 GridFunction 形式给出
+                #   FiniteElementSpace
+                #   FiniteElementCollection: <name>
+                #   VDim: <vd>
+                #   Ordering: <ord>      (0 = byNODES, 1 = byVDIM)
+                #   <values...>
+                # MFEM 约定前 num_vertices 个自由度即为网格顶点，据此恢复顶点坐标。
+                vd, ordering = 3, 0
+                i += 1
+                while i < len(lines):
+                    l = lines[i].strip()
+                    if l.startswith("VDim"):
+                        vd = int(l.split(":")[1])
+                    elif l.startswith("Ordering"):
+                        ordering = int(l.split(":")[1])
+                    elif l == "" or l == "FiniteElementSpace" or l.startswith("FiniteElementCollection"):
+                        pass
+                    else:
+                        break  # 到达第一个数值行
+                    i += 1
+                vals = []
+                while i < len(lines):
+                    l = lines[i].strip()
+                    if l:
+                        vals.extend(map(float, l.split()))
+                    i += 1
+                ndof = len(vals) // vd if vd else 0
+                self.vertices = []
+                for vi in range(self.num_vertices):
+                    if ordering == 0:  # byNODES
+                        coord = [vals[d * ndof + vi] for d in range(vd)]
+                    else:              # byVDIM
+                        coord = [vals[vi * vd + d] for d in range(vd)]
+                    while len(coord) < 3:
+                        coord.append(0.0)
+                    self.vertices.append(coord)
                 continue
             i += 1
 
@@ -126,33 +178,41 @@ def draw_vertices(fig, mesh: MFEMMesh):
 
     return
 
+# 各几何类型的棱边（局部顶点索引对）
+EDGES_BY_GEOM = {
+    GeometryType.TRIANGLE:    [(0, 1), (1, 2), (2, 0)],
+    GeometryType.SQUARE:      [(0, 1), (1, 2), (2, 3), (3, 0)],
+    GeometryType.TETRAHEDRON: [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)],
+    GeometryType.CUBE:        [(0, 1), (1, 2), (2, 3), (3, 0),
+                               (4, 5), (5, 6), (6, 7), (7, 4),
+                               (0, 4), (1, 5), (2, 6), (3, 7)],
+}
+
+
 def draw_elements(fig, mesh: MFEMMesh, part_file):
 
-   #(N,parts) = read_parts(part_file)
-    
-    (N,parts) = read_parts(part_file)
+    (N, parts) = read_parts(part_file)
     vertices = mesh.vertices
 
-    all_lines = {}
-    for i in range(N):
-        all_lines[i] = [[],[],[]]
+    all_lines = {p: [[], [], []] for p in range(N)}
 
-    for i, e in enumerate(mesh.elements):
-        part = parts[i]
-        if e['geom'] == 4:
-            v = e['connectivity'] 
-            i, j, k, l = v[0], v[1], v[2], v[3]
-            for a, b in [(i, j), (j, k), (k, i), (i,l), (j,l), (k,l)]:
-                all_lines[part][0] += [vertices[a][0], vertices[b][0], None]
-                all_lines[part][1] += [vertices[a][1], vertices[b][1], None]
-                all_lines[part][2] += [vertices[a][2], vertices[b][2], None]
-
+    for idx, e in enumerate(mesh.elements):
+        part = parts[idx]
+        edges = EDGES_BY_GEOM.get(e['geom'])
+        if edges is None:
+            continue  # 暂不支持的几何类型（如 PRISM）
+        v = e['connectivity']
+        for a, b in edges:
+            va, vb = v[a], v[b]
+            all_lines[part][0] += [vertices[va][0], vertices[vb][0], None]
+            all_lines[part][1] += [vertices[va][1], vertices[vb][1], None]
+            all_lines[part][2] += [vertices[va][2], vertices[vb][2], None]
 
     # draw
-    for i in range(N):
+    for p in range(N):
         fig.add_trace(go.Scatter3d(
-            x=all_lines[i][0], y=all_lines[i][1], z=all_lines[i][2],
-            mode='lines',line=dict(color=COLORS[i]),
+            x=all_lines[p][0], y=all_lines[p][1], z=all_lines[p][2],
+            mode='lines', line=dict(color=COLORS[p % len(COLORS)]),
         ))
 
     return

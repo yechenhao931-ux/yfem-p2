@@ -25,6 +25,8 @@ public:
         real_t coords[3];
     };
     
+    int dimension = 0;
+
     std::vector<Element> elements;
     std::vector<Element> boundary;
 

@@ -28,13 +28,15 @@ Graph::Graph(const MFEMMesh10 &mfem_mesh, int dim)
 
     for (int i = 0; i < mfem_mesh.elements.size(); i++)
     {
-        if (mfem_mesh.elements[i].geom_type == 4)
+        int gt = mfem_mesh.elements[i].geom_type;
+        // TRIANGLE=2, SQUARE=3, TETRAHEDRON=4, CUBE=5
+        if (gt == 2 || gt == 3 || gt == 4 || gt == 5)
         {
             basic_elements[i] = mfem_mesh.elements[i].vertex_indices;
         }
         else
         {
-            assert(0);
+            throw std::runtime_error("Unsupported element geometry type in Graph construction");
         }
     }
     auto dual_graph = build_dual_graph(basic_elements, dim);
