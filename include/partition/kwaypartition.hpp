@@ -40,6 +40,8 @@ struct KwayOptions
     int    coarseLimit   = 20;    // 最粗图每分区顶点数下限（实际阈值=coarseLimit×nparts）
     real_t minCoarseRation= 0.75; // 粗化率低于此值时停止粗化
     int    maxLevels     = 128;
+    bool   useUnionFind  = false; // A-2: union-find 粗化（替代 HEM）
+    real_t coarsenWeightCap = 0;  // union-find 超级顶点权重上限系数（0=不限）
 
     // ── 初始划分参数 ──────────────────────────────────────────
     int   initTrials    = 5;     // 初始划分随机试验次数（每次 RB 内部也有多次试验）
@@ -50,6 +52,7 @@ struct KwayOptions
     KwayObjective objective = KwayObjective::EdgeCut;
     int   nFMIter       = 10;    // 每层 k-way FM 最大迭代轮数
     real_t ubFactor      = 1.03; // 允许最大不平衡比
+    bool  useIndepSetRefine = false; // A-3: 独立集并行精化（替代串行 FM，仅 EdgeCut）
  
     int   seed          = 42;
     bool  verbose       = false;

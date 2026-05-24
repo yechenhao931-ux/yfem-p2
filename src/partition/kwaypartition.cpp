@@ -99,6 +99,8 @@ KwayResult KwayPartition(Graph& graph, const KwayOptions& opts) {
     co.minCoarseRation = opts.minCoarseRation;
     co.maxLevels      = opts.maxLevels;
     co.seed           = (int)rng();
+    co.useUnionFind   = opts.useUnionFind;
+    co.coarsenWeightCap = opts.coarsenWeightCap;
 
     Graph* gc = CoarsenGraph(graph, K, co);
 
@@ -135,9 +137,12 @@ KwayResult KwayPartition(Graph& graph, const KwayOptions& opts) {
         // 精化
         if (opts.objective == KwayObjective::EdgeCut) {
             ComputeCkrinfo(*fine, K);
-            int gain = KwayFMCut(*fine, fmo);
+            int gain = opts.useIndepSetRefine ? IndepSetRefineCut(*fine, fmo)
+                                              : KwayFMCut(*fine, fmo);
             if (opts.verbose)
-                std::printf("  KwayFMCut gain=%d  cut=%d\n", gain, fine->mincut);
+                std::printf("  %s gain=%d  cut=%d\n",
+                            opts.useIndepSetRefine ? "IndepSet" : "KwayFMCut",
+                            gain, fine->mincut);
         } else {
             ComputeCkrinfo(*fine, K);
             ComputeVkrinfo(*fine, K);
@@ -153,7 +158,8 @@ KwayResult KwayPartition(Graph& graph, const KwayOptions& opts) {
     // ── 最终精化（额外几轮确保质量）─────────────────────────
     if (opts.objective == KwayObjective::EdgeCut) {
         ComputeCkrinfo(graph, K);
-        KwayFMCut(graph, fmo);
+        if (opts.useIndepSetRefine) IndepSetRefineCut(graph, fmo);
+        else                        KwayFMCut(graph, fmo);
     } else {
         ComputeCkrinfo(graph, K);
         ComputeVkrinfo(graph, K);

@@ -604,3 +604,159 @@ int KwayFMVol(Graph &g, const KwayFMOpts &opts)
     }
     return totalGain;
 }
+
+// ================================================================
+//  IndepSetRefineCut  ──  A-3: 独立集并行精化（G-kway, DAC'24）
+//
+//  与串行 FM 的区别：FM 用优先队列每次只移动一个顶点；本算法每轮并行地
+//  找到一个"独立集"的正增益移动（互不相邻），一次性应用，迭代度更高。
+//  每轮三步（对应论文 Algorithm 2/3）：
+//    1) 找移动：并行计算每个边界点的最佳合法目标(gain>0 且不撑爆目标分区)；
+//       仅当相邻"想动"的顶点里本点 ID 最小时才入选 → 保证独立集（移动相加性）
+//    2) 排序：按 gain 降序（平局按顶点 ID 升序，确定性）
+//    3) 选择：取"最长不破坏平衡前缀"并行应用（论文的 scan + 最长平衡子序列）
+//  迭代到无正增益移动或无法在平衡下推进为止。
+//  注：移动集为独立集 → 总增益 = 各移动增益之和（边不被两端同时移动）。
+// ================================================================
+int IndepSetRefineCut(Graph &g, const KwayFMOpts &opts)
+{
+    const int n = g.nvtxs, K = opts.nparts;
+
+    int W = 0;
+    for (int v = 0; v < n; ++v)
+        W += g.Vwgt(v);
+    real_t ideal = (real_t)W / K;
+    std::vector<int> maxPW(K);
+    for (int p = 0; p < K; ++p)
+        maxPW[p] = (int)(opts.ubFactor * ideal + 0.5f);
+
+    int nthreads = 1;
+#ifdef _OPENMP
+    nthreads = omp_get_max_threads();
+#endif
+
+    struct Move
+    {
+        int v, src, dst, gain;
+    };
+    int totalGain = 0;
+
+    for (int iter = 0; iter < opts.nIter; ++iter)
+    {
+        ComputeCkrinfo(g, K); // 刷新 ckrinfo / cnbrPool / pwgts / bndind
+
+        std::vector<int> bestDst(n, -1), bestGain(n, 0);
+
+        // ── 步骤1a：每个边界点的最佳合法目标（并行）──
+#pragma omp parallel for schedule(dynamic, 256) if (g.nbnd > 4096)
+        for (int bi = 0; bi < g.nbnd; ++bi)
+        {
+            int v = g.bndind[bi];
+            const Ckrinfo &ci = g.ckrinfo[v];
+            if (ci.ed == 0 || ci.inbr < 0)
+                continue;
+            int wv = g.Vwgt(v), bd = -1, bg = 0;
+            for (int i = 0; i < ci.nnbrs; ++i)
+            {
+                int p = g.cnbrPool[ci.inbr + i].pid;
+                int gain = g.cnbrPool[ci.inbr + i].ed - ci.id;
+                if (gain > 0 && g.pwgts[p] + wv <= maxPW[p] &&
+                    (gain > bg || (gain == bg && (bd == -1 || p < bd))))
+                {
+                    bg = gain;
+                    bd = p;
+                }
+            }
+            bestDst[v] = bd;
+            bestGain[v] = bg;
+        }
+
+        // ── 步骤1b：独立集选择（并行）──
+        //   v 入选 ⇔ 有合法目标 且 相邻"想动"顶点中 v 的 ID 最小
+        std::vector<std::vector<Move>> moveTL(nthreads);
+#pragma omp parallel for schedule(dynamic, 256) if (g.nbnd > 4096)
+        for (int bi = 0; bi < g.nbnd; ++bi)
+        {
+            int v = g.bndind[bi];
+            if (bestDst[v] < 0)
+                continue;
+            bool selected = true;
+            for (int ei = g.xadj[v]; ei < g.xadj[v + 1]; ++ei)
+            {
+                int u = g.adjncy[ei];
+                if (bestDst[u] >= 0 && u < v)
+                {
+                    selected = false;
+                    break;
+                }
+            }
+            if (!selected)
+                continue;
+            int tid = 0;
+#ifdef _OPENMP
+            tid = omp_get_thread_num();
+#endif
+            moveTL[tid].push_back({v, g.where[v], bestDst[v], bestGain[v]});
+        }
+
+        std::vector<Move> moves;
+        for (auto &mv : moveTL)
+            moves.insert(moves.end(), mv.begin(), mv.end());
+        if (moves.empty())
+            break;
+
+        // ── 步骤2：按增益降序（平局按 ID 升序）──
+        std::sort(moves.begin(), moves.end(), [](const Move &a, const Move &b)
+                  { return a.gain != b.gain ? a.gain > b.gain : a.v < b.v; });
+
+        // ── 步骤3：最长"不破坏平衡"前缀 ──
+        //   limit[p] = max(maxPW[p], startPW[p])：欠载分区可填到 maxPW；
+        //   已超载分区(初始不平衡)不允许再增长。nViol 跟踪越界分区数。
+        std::vector<int> cumPW = g.pwgts;
+        std::vector<int> lim(K);
+        for (int p = 0; p < K; ++p)
+            lim[p] = std::max(maxPW[p], g.pwgts[p]);
+        auto over = [&](int p)
+        { return cumPW[p] > lim[p]; };
+
+        int nViol = 0, bestLen = 0, prefixGain = 0, runGain = 0;
+        for (size_t j = 0; j < moves.size(); ++j)
+        {
+            const Move &m = moves[j];
+            int wv = g.Vwgt(m.v);
+            bool sB = over(m.src);
+            cumPW[m.src] -= wv;
+            nViol += (int)over(m.src) - (int)sB; // src 减少：可能 +越界→不越界
+            bool dB = over(m.dst);
+            cumPW[m.dst] += wv;
+            nViol += (int)over(m.dst) - (int)dB; // dst 增加：可能 不越界→越界
+            runGain += m.gain;
+            if (nViol == 0)
+            {
+                bestLen = (int)j + 1;
+                prefixGain = runGain;
+            }
+        }
+
+        if (bestLen == 0)
+            break; // 平衡约束下无法推进
+
+        // 应用前缀（移动互不相邻 → 可并行；这里直接顺序应用，O(bestLen)）
+        for (int j = 0; j < bestLen; ++j)
+        {
+            const Move &m = moves[j];
+            int wv = g.Vwgt(m.v);
+            g.where[m.v] = m.dst;
+            g.pwgts[m.src] -= wv;
+            g.pwgts[m.dst] += wv;
+        }
+        totalGain += prefixGain;
+
+        if (opts.verbose)
+            std::printf("  [IndepSet iter%d] moves=%zu applied=%d gain=%d\n",
+                        iter, moves.size(), bestLen, prefixGain);
+    }
+
+    ComputeCkrinfo(g, K); // 刷新 mincut / ckrinfo 供下游使用
+    return totalGain;
+}

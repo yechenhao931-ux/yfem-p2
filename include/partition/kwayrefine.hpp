@@ -12,5 +12,7 @@ struct KwayFMOpts
 };
 int KwayFMCut(Graph &g, const KwayFMOpts &opts);
 int KwayFMVol(Graph &g, const KwayFMOpts &opts);
+// A-3: 独立集并行精化（G-kway）——替代串行 FM，仅优化 EdgeCut
+int IndepSetRefineCut(Graph &g, const KwayFMOpts &opts);
 
 #endif

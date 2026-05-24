@@ -30,9 +30,17 @@ struct CoarsenOpts
 {
     int coarseLimit = 20; // 粗化停止的顶点数下限（相对于 nparts 的倍数）
     real_t minCoarseRation = 0.75; //粗化比 >= 此值则停止（收益不足）
-    
+
     int maxLevels = 128;   // 最大粗化层数
     int seed = 42;
+
+    // ── A-2: union-find 粗化（G-kway）──
+    //   true  : 用带打分的 union-find 粗化（一趟选邻居可并行，子集可合并多点，层数更少）
+    //   false : 经典 Heavy-Edge-Matching（默认，保持原行为）
+    bool useUnionFind = false;
+    //   超级顶点权重上限系数：>0 时 maxVwgt = coarsenWeightCap × totalVwgt/nparts，
+    //   防止 union-find 合出过重子集；0 表示不限制（遵循论文仅靠打分）
+    real_t coarsenWeightCap = 0;
 };
 
 // 从 fine 出发递归向上粗化，返回最粗一层的指针（已 new）

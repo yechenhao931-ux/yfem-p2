@@ -5,6 +5,7 @@
 #include "common/optparser.hpp"
 
 #include <random>
+#include <chrono>
 
 int main(int argc, char *argv[])
 {
@@ -13,6 +14,9 @@ int main(int argc, char *argv[])
     int n_part = 8;
     char k_or_g = 'g';
     double alpha = 0.7;
+    int use_uf = 0; // A-2: union-find 粗化
+    int use_is = 0; // A-3: 独立集精化
+    double cap = 0.0; // union-find 权重上限系数
 
     // 乱数を生成する
     std::random_device rd;
@@ -31,6 +35,12 @@ int main(int argc, char *argv[])
                    "set the seed");
     args.AddOption(&alpha, "-a", "--alpha",
                    " 拓扑权重（0~1）");
+    args.AddOption(&use_uf, "-u", "--unionfind",
+                   "union-find 粗化(1=开启, A-2)");
+    args.AddOption(&use_is, "-i", "--indepset",
+                   "独立集精化(1=开启, A-3)");
+    args.AddOption(&cap, "-c", "--cap",
+                   "union-find 超级顶点权重上限系数(0=不限)");
     args.Parse();
     if (!args.Good())
     {
@@ -96,10 +106,17 @@ int main(int argc, char *argv[])
         o2.nparts = npart;
         o2.verbose = false;
         o2.seed = seed;
+        o2.useUnionFind = (use_uf != 0);       // A-2
+        o2.coarsenWeightCap = (real_t)cap;
+        o2.useIndepSetRefine = (use_is != 0);  // A-3
 
+        auto t0 = std::chrono::steady_clock::now();
         KwayResult r2 = KwayPartition(g2, o2);
-        std::printf("\n[Kway] cut=%d  vol=%d  imb=%.2f%% \n",
-                    r2.mincut, r2.minvol, r2.maxImbalance * 100);
+        auto t1 = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::printf("\n[Kway uf=%d is=%d cap=%.1f] cut=%d  vol=%d  imb=%.2f%%  levels=%d  time=%.1fms\n",
+                    use_uf, use_is, cap, r2.mincut, r2.minvol,
+                    r2.maxImbalance * 100, r2.nlevels, ms);
     }
 
     std::cout << "finished\n";
