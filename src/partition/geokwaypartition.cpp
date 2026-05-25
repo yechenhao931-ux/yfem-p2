@@ -462,7 +462,7 @@ GeoKwayResult GeoKwayPartition(Graph &graph, const GeoKwayOptions &opts)
                             rep, cr.isolatedCount, cr.verticesMoved, moved, graph.mincut);
             if (cr.isolatedCount == 0 && moved == 0) break;
         }
-        // 连通+平衡修复后做一轮额外 FM 精化恢复切边质量
+        // 连通+平衡修复后做一轮额外 FM 精化恢复质量
         // FM 自身有 ubFactor 约束，不会破坏前面 PostBalanceFix 达成的平衡
         if (didRepair)
         {
@@ -472,19 +472,36 @@ GeoKwayResult GeoKwayPartition(Graph &graph, const GeoKwayOptions &opts)
             fmo.ubFactor = opts.ubFactor;
             fmo.verbose = false;
             ComputeCkrinfo(graph, K);
-            int g_extra = KwayFMCut(graph, fmo);
+            // 与主精化目标保持一致：vol 模式下用 Volume FM 收尾，
+            // 否则连通性修复后的额外精化会把已优化的通信量重新按切边推回去。
+            int g_extra = opts.useVolume ? KwayFMVol(graph, fmo)
+                                         : KwayFMCut(graph, fmo);
             if (opts.verbose)
-                std::printf("[PostFM] gain=%d  cut=%d\n", g_extra, graph.mincut);
+                std::printf("[PostFM] gain=%d  cut=%d  vol=%d\n",
+                            g_extra, graph.mincut, graph.minvol);
+
+            // Volume FM 的增益不惩罚"断开"，收尾 FM 可能重新切出孤岛。
+            // 故 vol 模式下在收尾 FM 之后再补一轮连通性/平衡修复，
+            // 保证最终输出仍是连通、均衡的分区（cut 模式天然抑制孤岛，无需此步）。
+            if (opts.useVolume)
+            {
+                for (int rep = 0; rep < 3; ++rep)
+                {
+                    ConnectRepairResult cr = EnforceConnectivity(
+                        graph, K, opts.ubFactor * 1.10f, 0.95f);
+                    int moved = PostBalanceFix(graph, K, opts.ubFactor);
+                    if (cr.isolatedCount == 0 && moved == 0) break;
+                }
+            }
         }
     }
 
     // ── 5. 最终统计 ────────────────────────────────────────────
-    { int c=0;
-      for(int v=0;v<graph.nvtxs;++v)
-          for(int ei=graph.xadj[v];ei<graph.xadj[v+1];++ei)
-              if(graph.where[v]!=graph.where[graph.adjncy[ei]]) c+=graph.Ewgt(ei);
-      graph.mincut=c/2; }
- 
+    //   用与 MetisPartition::FillStats 完全相同的口径填充 mincut / minvol，
+    //   保证两种方法可直接对比（ComputeVkrinfo 依赖 ckrinfo，先算 ckrinfo）。
+    ComputeCkrinfo(graph, K);
+    ComputeVkrinfo(graph, K);
+
     real_t ideal=(real_t)graph.tvwgt[0]/K;
     real_t maxImb=0, sumImb=0;
     for(int p=0;p<K;++p){

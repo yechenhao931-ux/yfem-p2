@@ -62,8 +62,8 @@ static void RunOne(const char* tag, MFEMMesh10& mmesh, int nparts, int seed,
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     auto [isoParts, totalComps] = CountComponents(g, nparts);
     int idealComps = nparts;
-    std::printf("[%-20s] cut=%-5d  imb=%5.2f%%  comps=%d/%d  isoParts=%d  time=%.1fms\n",
-                tag, r.mincut, r.maxImbalance * 100,
+    std::printf("[%-20s] cut=%-5d  vol=%-5d  imb=%5.2f%%  comps=%d/%d  isoParts=%d  time=%.1fms\n",
+                tag, r.mincut, r.minvol, r.maxImbalance * 100,
                 totalComps, idealComps, isoParts, ms);
 }
 
@@ -73,26 +73,29 @@ int main(int argc, char* argv[])
     int nparts = 8;
     int seed = 42;
     real_t alpha = 0.7;
+    int useVol = 0; // 1 → 以通信量(vol)为优化目标，0 → 以切边(cut)为目标
 
     OptionsParser args(argc, argv);
     args.AddOption(&mesh_file, "-m", "--mesh", "Mesh file to use.");
     args.AddOption(&nparts, "-p", "--part", "Number of partitions.");
     args.AddOption(&seed, "-s", "--seed", "Random seed.");
     args.AddOption(&alpha, "-a", "--alpha", "Topology weight.");
+    args.AddOption(&useVol, "-v", "--vol", "Objective: 1=communication volume, 0=edge cut.");
     args.Parse();
     if (!args.Good()) { args.PrintUsage(std::cout); return 1; }
 
     MFEMMesh10 mmesh;
     mmesh.read_mesh(mesh_file);
 
-    std::printf("\n=== Mesh=%s  parts=%d  seed=%d  alpha=%.2f ===\n",
-                mesh_file, nparts, seed, alpha);
+    std::printf("\n=== Mesh=%s  parts=%d  seed=%d  alpha=%.2f  obj=%s ===\n",
+                mesh_file, nparts, seed, alpha, useVol ? "vol" : "cut");
 
     // 配置 1：原始基线（关闭所有改进）
     GeoKwayOptions baseline;
     baseline.nparts = nparts;
     baseline.seed = seed;
     baseline.alpha = alpha;
+    baseline.useVolume = (useVol != 0);
     baseline.verbose = false;
     baseline.enforceConnectivity = false;
     baseline.coarsenWeightCap = 0;        // 禁用 HEM 权重上限

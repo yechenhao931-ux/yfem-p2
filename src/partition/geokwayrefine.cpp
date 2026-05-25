@@ -525,12 +525,37 @@ GeoFMResult GeoKwayFMVol(Graph &g, const GeoFMOpts &opts,
     for (int p = 0; p < K; ++p)
         maxPW[p] = (int)(opts.ubFactor * ideal + 0.5f);
 
-    int maxVol = 0;
+    // Bucket 范围（混合增益上界估计）——必须以"单次移动"的增益上界为准，
+    // 而非全局总通信量。早期实现误用 Σvsize(全局通信量, ~n) 作上界，导致
+    // R≈alpha·n·GEO_SCALE 达数百万，分配巨量空桶且 popMax 线性扫描，
+    // 使 vol 路径慢上百倍。这里改用与 GeoKwayFMCut 一致的口径：
+    //   topo(vol) 项上界 = max_v ( vsize(v) + Σ_{u∈adj(v)} vsize(u) )
+    //   geo  项上界     = beta · bbox 对角线
+    int maxVolGain = 1;
     for (int v = 0; v < n; ++v)
-        maxVol += g.Vsize(v);
+    {
+        int g_v = g.Vsize(v);
+        for (int ei = g.xadj[v]; ei < g.xadj[v + 1]; ++ei)
+            g_v += g.Vsize(g.adjncy[ei]);
+        maxVolGain = std::max(maxVolGain, g_v);
+    }
+    real_t minX = std::numeric_limits<real_t>::max(), maxX = -minX;
+    real_t minY = minX, maxY = -minX, minZ = minX, maxZ = -minX;
+    for (int v = 0; v < n; ++v)
+    {
+        const Coord &c = g.coordinates[v];
+        minX = std::min(minX, c.x); maxX = std::max(maxX, c.x);
+        minY = std::min(minY, c.y); maxY = std::max(maxY, c.y);
+        minZ = std::min(minZ, c.z); maxZ = std::max(maxZ, c.z);
+    }
+    real_t bboxD2 = (maxX - minX) * (maxX - minX)
+                  + (maxY - minY) * (maxY - minY)
+                  + (maxZ - minZ) * (maxZ - minZ);
+    if (bboxD2 < 1.0) bboxD2 = 1.0;
 
     real_t beta = opts.autoBeta ? CalibrateBeta(g, K, centroids) : opts.beta;
-    int R = std::max((int)((alpha * maxVol + (1 - alpha) * beta * 100.f) * GEO_SCALE + 1), 1);
+    int R = (int)((alpha * maxVolGain + (1 - alpha) * beta * std::sqrt(bboxD2) + 1.0) * GEO_SCALE + 1);
+    R = std::max(R, 1);
 
     auto geoGain = [&](int v, int dst) -> real_t
     {

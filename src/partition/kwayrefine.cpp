@@ -139,7 +139,6 @@ void ComputeVkrinfo(Graph &g, int nparts)
             vi.nnbrs = 0;
             continue;
         }
-        g.minvol += g.Vsize(v);
         for (int ei = g.xadj[v]; ei < g.xadj[v + 1]; ++ei)
         {
             int u = g.adjncy[ei], ew = g.Ewgt(ei), pu = g.where[u];
@@ -154,6 +153,10 @@ void ComputeVkrinfo(Graph &g, int nparts)
         bool becomes = (ci.id == 0);
         vi.inbr = (int)g.vnbrPool.size();
         vi.nnbrs = (int)seen.size();
+        // 标准 METIS TOTALV 口径：顶点 v 需把自身数据发给它触及的每个外部
+        // 分区，故通信量贡献 = vsize(v) × (相邻分区数)。旧实现只 +vsize(v)
+        // 一次（等价于"界面顶点数"），会低估真实通信量。
+        g.minvol += g.Vsize(v) * vi.nnbrs;
         for (int pu : seen)
         {
             int gv = tmpGv[pu] + (becomes ? g.Vsize(v) : 0);

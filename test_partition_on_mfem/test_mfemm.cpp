@@ -124,6 +124,7 @@ int main(int argc, char *argv[])
    bool visualization = true;
    bool algebraic_ceed = false;
    int er = 0;
+   int use_vol = 0; // 1 → GeoKway 以通信量(vol)为目标，0 → 以切边(cut)为目标
    srand((unsigned int)time(NULL));
    int seed = rand();
 
@@ -153,6 +154,8 @@ int main(int argc, char *argv[])
                   "set the seed");
    args.AddOption(&er, "-e", "--er",
                   "extra refinement");
+   args.AddOption(&use_vol, "-vol", "--use-vol",
+                  "GeoKway objective: 1=communication volume, 0=edge cut");
    args.Parse();
    if (!args.Good())
    {
@@ -203,11 +206,14 @@ int main(int argc, char *argv[])
    GeoKwayOptions o1;
    o1.nparts = num_procs;
    o1.seed = seed;
+   o1.useVolume = (use_vol != 0);
    o1.verbose = false;
 
    GeoKwayResult r1 = GeoKwayPartition(g1, o1);
-   std::printf("\n[GeoKway Volume α=%f] cut=%d  vol=%d  imb=%.2f%%  beta=%.4f\n",
-               0.7, r1.mincut, r1.minvol, r1.maxImbalance * 100, r1.betaUsed);
+   if (myid == 0)
+      std::printf("\n[GeoKway obj=%s] cut=%d  vol=%d  imb=%.2f%%  beta=%.4f\n",
+                  use_vol ? "vol" : "cut",
+                  r1.mincut, r1.minvol, r1.maxImbalance * 100, r1.betaUsed);
    int count[16] = {0};
    if (myid == 0)
    {
