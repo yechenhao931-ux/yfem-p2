@@ -62,7 +62,7 @@ target_include_directories(yfem
 )
 
 target_link_libraries(yfem 
-    PRIVATE common graph io partition pfem
+    PRIVATE common graph io partition
 )
 
 # --- 3. 针对 target 注入宏和库 ---

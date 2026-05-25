@@ -225,11 +225,9 @@ int main(int argc, char *argv[])
    //    parallel mesh is defined, the serial mesh can be deleted.
    ParMesh pmesh(MPI_COMM_WORLD, mesh, g1.where.data());
 
-   Timer timer = Timer();
-   if (myid == 0)
-   {
-      timer.start();
-   }
+   MPI_Barrier(MPI_COMM_WORLD);
+   double t0 = MPI_Wtime();
+   
 
    mesh.Clear();
    {
@@ -371,9 +369,23 @@ int main(int argc, char *argv[])
    //     local finite element solution on each processor.
    a.RecoverFEMSolution(X, b, x);
 
-   if (myid == 0)
-      timer.stop();
+   MPI_Barrier(MPI_COMM_WORLD);
+   double t1 = MPI_Wtime();
 
+   double local_time = t1 - t0;
+   double max_time;
+
+   MPI_Reduce(&local_time, &max_time,
+            1, MPI_DOUBLE,
+            MPI_MAX,
+            0, MPI_COMM_WORLD);
+
+   if (myid == 0)
+   {
+      cout << "FEM solve time: "
+         << max_time
+         << " s" << endl;
+   }
    // 15. Save the refined mesh and the solution in parallel. This output can
    //     be viewed later using GLVis: "glvis -np <np> -m mesh -g sol".
    {
