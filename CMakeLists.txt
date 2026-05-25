@@ -4,6 +4,8 @@ project(fem CXX)
 # --- 1. 定义开关选项 ---
 # 默认设置为 OFF，使用时通过 cmake -DENABLE_GMSH=ON .. 开启
 option(ENABLE_GMSH "Enable Gmsh support" OFF)
+# 原生 METIS 划分接口（baseline 对照）。默认 ON，找不到时自动降级关闭。
+option(ENABLE_METIS "Enable native METIS partitioning" ON)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 17)
@@ -16,6 +18,7 @@ endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Enable Gmsh: ${ENABLE_GMSH}")
+message(STATUS "Enable Metis: ${ENABLE_METIS}")
 
 # 根据构建类型设置不同编译选项和宏定义
 if(CMAKE_BUILD_TYPE STREQUAL "DEBUG")
@@ -34,6 +37,19 @@ if(ENABLE_GMSH)
     
     if(NOT GMSH_INCLUDE_DIR OR NOT GMSH_LIBRARY)
         message(FATAL_ERROR "Gmsh enabled but not found!")
+    endif()
+endif()
+
+# --- 2b. 条件查找 METIS ---
+# 找不到时仅警告并自动关闭（metispart.cpp 在无 USE_METIS 时编译为安全桩）。
+if(ENABLE_METIS)
+    find_path(METIS_INCLUDE_DIR metis.h)
+    find_library(METIS_LIBRARY NAMES metis)
+    if(NOT METIS_INCLUDE_DIR OR NOT METIS_LIBRARY)
+        message(WARNING "METIS requested but not found; disabling METIS support.")
+        set(ENABLE_METIS OFF)
+    else()
+        message(STATUS "Found METIS: ${METIS_LIBRARY}")
     endif()
 endif()
 
