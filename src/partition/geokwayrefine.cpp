@@ -234,32 +234,11 @@ GeoFMResult GeoKwayFMCut(Graph &g, const GeoFMOpts &opts, std::vector<std::vecto
 
     // 自动标定 beta
     real_t beta = opts.autoBeta ? CalibrateBeta(g, K, centroids) : opts.beta;
-
-    // ── 平衡感知项标定 ────────────────────────────────────────
-    //   bal(v,src→dst) = balScale * wv * (pwgts[src] - pwgts[dst]) / ideal
-    //   把典型量级 (ubFactor-1)*avg_wv 映射到 alpha*maxTopoR 的量级，
-    //   使 balanceGamma 直接表达为"软平衡相对于 topo 的影响占比"。
-    //   balanceGamma=0 时关闭，>0 时给"重→轻"方向额外推力，
-    //   既改善 maxImbalance，又因软推力避免硬上限震荡而通常改善 mincut。
-    real_t balScale = 0.0;
-    if (opts.balanceGamma > 0.0 && n > 0)
-    {
-        real_t avgVw = (real_t)W / std::max(1, n);
-        real_t balTypical = std::max((real_t)(opts.ubFactor - 1.0) * avgVw,
-                                     (real_t)1e-6);
-        balScale = opts.balanceGamma * (alpha * (real_t)maxTopoR) / balTypical;
-    }
-    real_t balUpper = balScale * (real_t)opts.ubFactor; // 桶上界余量
-
     if (opts.verbose)
-        std::printf("  [GeoFM] alpha=%.2f  beta=%.4f  gamma=%.2f balScale=%.3f\n",
-                    alpha, beta, opts.balanceGamma, balScale);
+        std::printf("  [GeoFM] alpha=%.2f  beta=%.4f\n", alpha, beta);
 
     // Bucket 范围（以整型桶为单位，混合增益乘以 GEO_SCALE 后的最大值）
-    int R = (int)((alpha * maxTopoR
-                   + (1 - alpha) * beta * std::sqrt(bboxD2)
-                   + balUpper
-                   + 1.0) * GEO_SCALE + 1);
+    int R = (int)((alpha * maxTopoR + (1 - alpha) * beta * std::sqrt(bboxD2) + 1.0) * GEO_SCALE + 1);
     R = std::max(R, 1);
 
     // Cnbr Pool 操作（与 KwayRefine 相同）
@@ -291,10 +270,30 @@ GeoFMResult GeoKwayFMCut(Graph &g, const GeoFMOpts &opts, std::vector<std::vecto
         cu.nnbrs++;
     };
 
+    // 混合增益计算（核心公式）
+    // gain_hybrid(v→p) = alpha*topo_gain + (1-alpha)*beta*geo_gain
+    auto hybridGain = [&](int v, int dst) -> real_t
+    {
+        const Ckrinfo &ci = g.ckrinfo[v];
+        int src = g.where[v];
+        // 拓扑增益：找 dst 的 Cnbr
+        real_t topo = 0.;
+        for (int i = 0; i < ci.nnbrs; i++)
+        {
+            if (g.cnbrPool[ci.inbr + i].pid == dst)
+            {
+                topo = (real_t)(g.cnbrPool[ci.inbr + i].ed - ci.id);
+                break;
+            }
+        }
+
+        // 几何增益：移到 dst 后距离减少
+        real_t geo = dist2C(g.coordinates[v], centroids[src]) - dist2C(g.coordinates[v], centroids[dst]);
+
+        return alpha * topo + (1.0 - alpha) * beta * geo;
+    };
+
     // 计算每顶点最优可行混合增益
-    //   关键修复：原 calcBest -> hybridGain 内层重新扫 ci.nnbrs 找 dst，
-    //   总复杂度 O(nnbrs²)。这里融合为单次 O(nnbrs) 扫描，
-    //   并按需叠加平衡感知项 balScale * wv * (pw[src]-pw[dst]) / ideal。
     std::vector<int> bestPart(n, -1);
     std::vector<real_t> bestGain(n, -1e30);
     auto calcBest = [&](int v)
@@ -303,22 +302,17 @@ GeoFMResult GeoKwayFMCut(Graph &g, const GeoFMOpts &opts, std::vector<std::vecto
         bestGain[v] = -1e30;
         const Ckrinfo &ci = g.ckrinfo[v];
         if (ci.ed == 0 || ci.inbr < 0)
+        {
             return;
-        const int wv = g.Vwgt(v);
-        const int src = g.where[v];
-        const real_t dSrc2 = dist2C(g.coordinates[v], centroids[src]);
-        const real_t pwSrc = (real_t)g.pwgts[src];
+        }
+        int wv = g.Vwgt(v);
+        // 拓扑：只考虑有拓扑邻居的分区（保证图连通性）
         for (int i = 0; i < ci.nnbrs; i++)
         {
-            const Cnbr &nb = g.cnbrPool[ci.inbr + i];
-            const int p = nb.pid;
+            int p = g.cnbrPool[ci.inbr + i].pid;
             if (g.pwgts[p] + wv > maxPW[p])
                 continue;
-            const real_t topo = (real_t)(nb.ed - ci.id);
-            const real_t geo  = dSrc2 - dist2C(g.coordinates[v], centroids[p]);
-            real_t hg = alpha * topo + (1.0 - alpha) * beta * geo;
-            if (balScale > 0.0)
-                hg += balScale * (real_t)wv * (pwSrc - (real_t)g.pwgts[p]) / ideal;
+            real_t hg = hybridGain(v, p);
             if (hg > bestGain[v])
             {
                 bestGain[v] = hg;
@@ -373,11 +367,9 @@ GeoFMResult GeoKwayFMCut(Graph &g, const GeoFMOpts &opts, std::vector<std::vecto
             }
 
             int src = g.where[v];
-            // 复用 calcBest 已算过的 bestGain（== hybridGain(v,dst)），
-            // 避免再扫一次 O(nnbrs)。
-            real_t hg = bestGain[v];
+            real_t hg = hybridGain(v, dst);
 
-            // 精确拓扑增益（在重建 ckrinfo 前直接读 cnbr 拓扑差）
+            // 精确拓扑增益
             int topoGain = 0;
             {
                 int idx = findC(v, dst);
